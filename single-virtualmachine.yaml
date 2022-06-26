@@ -1,0 +1,120 @@
+- hosts: localhost
+  collections:
+   - azure.azcollection
+  tasks:
+  - name: Create a resource group
+    azure_rm_resourcegroup:
+      name: myResourceGroup
+      location: westus
+      tags:
+          testing: testing
+          delete: never
+    register: myrg
+
+  - debug: msg="{{myrg.state.name}}"
+
+  - name: create a storage account
+    azure_rm_storageaccount:
+      resource_group: "{{myrg.state.name}}"
+      name: clh0002
+      type: Standard_RAGRS
+      tags:
+         testing: testing
+         delete: on-exit
+
+
+  - name: Create virtual network
+    azure_rm_virtualnetwork:
+      resource_group: "{{myrg.state.name}}"
+      name: myVnet
+      address_prefixes: "10.0.0.0/16"
+
+  - name: Add subnet
+    azure_rm_subnet:
+      resource_group: "{{myrg.state.name}}"
+      name: mySubnet
+      address_prefix: "10.0.1.0/24"
+      virtual_network: myVnet
+
+  - name: Create public IP address
+    azure_rm_publicipaddress:
+      resource_group: "{{myrg.state.name}}"
+      allocation_method: Static
+      name: myPublicIP
+    register: output_ip_address
+
+  - name: Public IP of VM
+    debug:
+      msg: "The public IP is {{ output_ip_address.state.ip_address }}."
+
+  - name: Create Network Security Group that allows SSH
+    azure_rm_securitygroup:
+      resource_group: "{{myrg.state.name}}"
+      name: myNetworkSecurityGroup
+      rules:
+        - name: SSH
+          protocol: Tcp
+          destination_port_range: 22
+          access: Allow
+          priority: 1001
+          direction: Inbound
+        - name: HTTPD
+          protocol: Tcp
+          destination_port_range: 80
+          access: Allow
+          priority: 1002
+          direction: Inbound
+
+  - name: Create virtual network interface card
+    azure_rm_networkinterface:
+      resource_group: "{{myrg.state.name}}"
+      name: myNIC
+      virtual_network: myVnet
+      subnet: mySubnet
+      public_ip_name: myPublicIP
+      security_group: myNetworkSecurityGroup
+
+  - name: Create VM
+    azure_rm_virtualmachine:
+      resource_group: "{{myrg.state.name}}"
+      name: myVM
+      vm_size: Standard_DS1_v2
+      admin_username: azureuser
+      ssh_password_enabled: false
+      ssh_public_keys:
+        - path: /home/azureuser/.ssh/authorized_keys
+          key_data: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCrHcfIjAPkeFG8WlwUHkjAWtA9IUtjonUpK/rQSySq+2h+hs7NonGJhFugR7Au0LonMZkQaUozSu+zHs/s/25JuXOdOBhVIoHGJMRGk9MHKZQ8rPXek1K5II+RmL15fqdt7m+Dx8ctIJETtcYv+ENOtZY7DenSWOHOxCxBBHQ3vUG/PQSlQh19hcMDvsC0+NJeK3IFCBIeMcZ9oPGOkdHkjky4GY7eNNt+8ydt7bE6WuvnO3W1fwbRGh2kd42YZdKuGK6QIZGBWesdDQIaaMZm7XEMpEHsPr2jI5xvhYpWtRNJCEnzojmES9aCylJTGBiY0uedVLyGsqKWqoZuVjKaUi4iS4fnJeSvNjs9Yo3ZOgZrr3MJ1pyYw2m85V47v4V569tu2Mf7VwFIkCcZtd7RkjqHM8+feomJC8SUthAABku7A/TK2mTbUZfJTbRgq1RT4ZnuDxivNvdCGJeQUwmbdepGsH13O4/Ggfg0b9oElblQ1Ng3xLIt0sQWPRko1o8= root@ansiblevm"
+      network_interfaces: myNIC
+      image:
+        offer: CentOS
+        publisher: OpenLogic
+        sku: '7.5'
+        version: latest
+
+
+  - name: create dynamic group
+    add_host: groups=mygroup  hostname={{output_ip_address.state.ip_address}}
+
+
+- hosts: mygroup
+  remote_user: azureuser
+  become: yes
+  tasks:
+
+     - name: install apache
+       yum:
+        name=httpd
+        state=present
+
+     - name: Write custom message in index.html
+       copy:
+         dest: /var/www/html/index.html
+         content: |
+           This is my custom index file
+           created using ansible,
+           Enjoy learning Ansible
+
+     - name: Start service httpd, if not started
+       service:
+        name: httpd
+        state: started
